@@ -10,16 +10,20 @@ import (
 	"net/url"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/davecgh/go-spew/spew"
 	pb "github.com/tmc/nlm/gen/notebooklm/v1alpha1"
 	"github.com/tmc/nlm/internal/batchexecute"
 	"github.com/tmc/nlm/internal/beprotojson"
 	"github.com/tmc/nlm/internal/rpc"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
-type Notebook = pb.Project
-type Note = pb.Source
+type (
+	Notebook = pb.Project
+	Note     = pb.Source
+)
 
 // Client handles NotebookLM API interactions.
 type Client struct {
@@ -44,11 +48,204 @@ func (c *Client) ListRecentlyViewedProjects() ([]*Notebook, error) {
 		return nil, fmt.Errorf("list projects: %w", err)
 	}
 
+	// Parse the complex nested structure from NotebookLM
+	if len(resp) > 0 && resp[0] == '[' {
+		var outerArray []interface{}
+		if err := json.Unmarshal(resp, &outerArray); err == nil {
+			if len(outerArray) > 0 {
+				// Try to parse the first element as the projects array
+				if projectsArray, ok := outerArray[0].([]interface{}); ok {
+					return parseProjectsFromArray(projectsArray)
+				}
+			}
+		}
+
+		// Fallback: Check if it's just a metadata array like [16]
+		if len(outerArray) == 1 {
+			return []*Notebook{}, nil
+		}
+	}
+
 	var response pb.ListRecentlyViewedProjectsResponse
 	if err := beprotojson.Unmarshal(resp, &response); err != nil {
 		return nil, fmt.Errorf("parse response: %w", err)
 	}
 	return response.Projects, nil
+}
+
+func parseProjectsFromArray(projectsArray []interface{}) ([]*Notebook, error) {
+	var notebooks []*Notebook
+
+	for _, item := range projectsArray {
+		projectData, ok := item.([]interface{})
+		if !ok || len(projectData) < 5 {
+			continue // Skip invalid project data
+		}
+
+		// Extract project information
+		title, _ := projectData[0].(string)
+		projectID, _ := projectData[2].(string)
+		emoji, _ := projectData[3].(string)
+
+		if title == "" || projectID == "" {
+			continue // Skip projects without essential data
+		}
+
+		// Parse metadata (if available)
+		var createTime *timestamppb.Timestamp
+		if len(projectData) > 5 && projectData[5] != nil {
+			if metadataArray, ok := projectData[5].([]interface{}); ok {
+				// Look for timestamp in various positions
+				for i, item := range metadataArray {
+					if timestampMs, ok := item.(float64); ok && timestampMs > 1000000000000 { // Check if it's a millisecond timestamp
+						createTime = &timestamppb.Timestamp{
+							Seconds: int64(timestampMs / 1000),
+							Nanos:   int32((int64(timestampMs) % 1000) * 1000000),
+						}
+						break
+					}
+					// Also check for nested arrays that might contain timestamps
+					if nestedArray, ok := item.([]interface{}); ok && len(nestedArray) > 0 {
+						if timestampMs, ok := nestedArray[0].(float64); ok && timestampMs > 1000000000000 {
+							createTime = &timestamppb.Timestamp{
+								Seconds: int64(timestampMs / 1000),
+								Nanos:   int32((int64(timestampMs) % 1000) * 1000000),
+							}
+							break
+						}
+					}
+					_ = i // Avoid unused variable
+				}
+			}
+		}
+
+		notebook := &pb.Project{
+			ProjectId: projectID,
+			Title:     title,
+			Emoji:     emoji,
+			Metadata: &pb.ProjectMetadata{
+				CreateTime: createTime,
+			},
+		}
+
+		notebooks = append(notebooks, notebook)
+	}
+
+	return notebooks, nil
+}
+
+func parseProjectFromGetProjectResponse(outerArray []interface{}) *Notebook {
+	if len(outerArray) == 0 {
+		return nil
+	}
+
+	// The response structure is [["title", [sources], projectID, emoji, ...]]
+	if projectArray, ok := outerArray[0].([]interface{}); ok && len(projectArray) >= 1 {
+		title, _ := projectArray[0].(string)
+
+		// Parse sources from the second element
+		var sources []*pb.Source
+		if len(projectArray) > 1 && projectArray[1] != nil {
+			if sourcesArray, ok := projectArray[1].([]interface{}); ok && len(sourcesArray) > 0 {
+				// Each element in sourcesArray is a source
+				sources = parseSourcesFromResponseArray(sourcesArray)
+			}
+		}
+
+		// Extract project ID and emoji from the response structure
+		var projectID, emoji string
+		if len(projectArray) > 2 {
+			projectID, _ = projectArray[2].(string)
+		}
+		if len(projectArray) > 3 {
+			emoji, _ = projectArray[3].(string)
+		}
+
+		project := &pb.Project{
+			ProjectId: projectID,
+			Title:     title,
+			Emoji:     emoji,
+			Sources:   sources,
+			Metadata:  &pb.ProjectMetadata{},
+		}
+		return project
+	}
+
+	return nil
+}
+
+func parseSourcesFromResponseArray(sourcesData []interface{}) []*pb.Source {
+	var sources []*pb.Source
+
+	// Each element in sourcesData is a source array with structure:
+	// [[sourceID], title, [metadata...], [status...]]
+	for _, sourceItem := range sourcesData {
+		if sourceArray, ok := sourceItem.([]interface{}); ok && len(sourceArray) >= 4 {
+			// Extract source ID from the first element (ID array)
+			var sourceID string
+			if idArray, ok := sourceArray[0].([]interface{}); ok && len(idArray) > 0 {
+				if id, ok := idArray[0].(string); ok {
+					sourceID = id
+				}
+			}
+
+			// Extract title from the second element
+			title, _ := sourceArray[1].(string)
+
+			// Skip if we don't have essential data
+			if sourceID == "" || title == "" {
+				continue
+			}
+
+			// Extract metadata from the third element
+			var sourceType pb.SourceType = pb.SourceType_SOURCE_TYPE_UNSPECIFIED
+			var status pb.SourceSettings_SourceStatus = pb.SourceSettings_SOURCE_STATUS_ENABLED
+			var lastModifiedTime *timestamppb.Timestamp
+
+			if metadataArray, ok := sourceArray[2].([]interface{}); ok {
+				// Parse timestamp from metadata (index 2 is usually the timestamp array)
+				if len(metadataArray) > 2 && metadataArray[2] != nil {
+					if timestampArray, ok := metadataArray[2].([]interface{}); ok && len(timestampArray) >= 2 {
+						if seconds, ok := timestampArray[0].(float64); ok {
+							if nanos, ok := timestampArray[1].(float64); ok {
+								lastModifiedTime = &timestamppb.Timestamp{
+									Seconds: int64(seconds),
+									Nanos:   int32(nanos),
+								}
+							}
+						}
+					}
+				}
+
+				// Try to determine source type from URL in metadata (index 7)
+				if len(metadataArray) > 7 && metadataArray[7] != nil {
+					if urlArray, ok := metadataArray[7].([]interface{}); ok && len(urlArray) > 0 {
+						if url, ok := urlArray[0].(string); ok && strings.HasPrefix(url, "http") {
+							sourceType = pb.SourceType_SOURCE_TYPE_WEB_PAGE
+						}
+					}
+				}
+			}
+
+			source := &pb.Source{
+				SourceId: &pb.SourceId{
+					SourceId: sourceID,
+				},
+				Title: title,
+				Metadata: &pb.SourceMetadata{
+					SourceType:       sourceType,
+					LastModifiedTime: lastModifiedTime,
+				},
+				Settings: &pb.SourceSettings{
+					Status: status,
+				},
+			}
+
+			sources = append(sources, source)
+		}
+	}
+
+	return sources
 }
 
 func (c *Client) CreateProject(title string, emoji string) (*Notebook, error) {
@@ -75,6 +272,22 @@ func (c *Client) GetProject(projectID string) (*Notebook, error) {
 	})
 	if err != nil {
 		return nil, fmt.Errorf("get project: %w", err)
+	}
+
+	// Debug: Check actual response content (commented out for production)
+	// fmt.Printf("DEBUG GetProject: Raw response (%d bytes): %q\n", len(resp), string(resp[:min(500, len(resp))]))
+
+	// Try to parse the complex nested structure similar to ListRecentlyViewedProjects
+	if len(resp) > 0 && resp[0] == '[' {
+		var outerArray []interface{}
+		if err := json.Unmarshal(resp, &outerArray); err == nil {
+			if len(outerArray) > 0 {
+				// Try to parse project data from the array structure
+				if project := parseProjectFromGetProjectResponse(outerArray); project != nil {
+					return project, nil
+				}
+			}
+		}
 	}
 
 	var project pb.Project
@@ -862,6 +1075,197 @@ func (c *Client) ShareAudio(projectID string, shareOption ShareOption) (*ShareAu
 	}
 
 	return result, nil
+}
+
+// Question/Answer operations
+
+// AnswerResult represents the response from asking a question
+type AnswerResult struct {
+	ProjectID string
+	Question  string
+	Answer    string
+	Sources   []string
+}
+
+// AskQuestion asks a question about the notebook content and returns an AI-generated answer
+// It will wait for the answer to be generated by polling the API
+func (c *Client) AskQuestion(projectID string, question string) (*AnswerResult, error) {
+	if projectID == "" {
+		return nil, fmt.Errorf("project ID required")
+	}
+	if question == "" {
+		return nil, fmt.Errorf("question required")
+	}
+
+	// Start the question processing
+	resp, err := c.rpc.Do(rpc.Call{
+		ID: rpc.RPCGuidebookGenerateAnswer,
+		Args: []interface{}{
+			projectID,
+			question,
+			nil, // Additional parameters (if needed)
+		},
+		NotebookID: projectID,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("ask question: %w", err)
+	}
+
+	var data []interface{}
+	if err := json.Unmarshal(resp, &data); err != nil {
+		return nil, fmt.Errorf("parse response JSON: %w", err)
+	}
+
+	result := &AnswerResult{
+		ProjectID: projectID,
+		Question:  question,
+	}
+
+	// Check if we got an immediate response or need to poll
+	if len(data) > 0 {
+		// Check if response indicates processing (like [3])
+		if len(data) == 1 {
+			if statusCode, ok := data[0].(float64); ok && statusCode == 3 {
+				// Status code 3 likely means "processing" - need to poll for result
+				return c.pollForAnswer(projectID, question, result)
+			}
+		}
+
+		// Try to parse immediate answer
+		if answer := c.parseAnswerFromResponse(data); answer != "" {
+			result.Answer = answer
+			return result, nil
+		}
+	}
+
+	// If we couldn't parse the answer, include the raw response for debugging
+	rawData, _ := json.Marshal(data)
+	result.Answer = fmt.Sprintf("Raw response: %s", string(rawData))
+	return result, nil
+}
+
+// pollForAnswer polls the API until an answer is ready
+func (c *Client) pollForAnswer(projectID, question string, result *AnswerResult) (*AnswerResult, error) {
+	const maxRetries = 60  // Increased to 2 minutes
+	const pollInterval = 2 // Seconds between polls
+
+	fmt.Fprintf(os.Stderr, "Waiting for response")
+
+	for i := 0; i < maxRetries; i++ {
+		// Wait before next poll (except first attempt)
+		if i > 0 {
+			time.Sleep(time.Duration(pollInterval) * time.Second)
+			fmt.Fprintf(os.Stderr, ".")
+		}
+
+		// Try different approaches for polling
+		// First, try the original endpoint
+		resp, err := c.rpc.Do(rpc.Call{
+			ID: rpc.RPCGuidebookGenerateAnswer,
+			Args: []interface{}{
+				projectID,
+				question,
+				nil,
+			},
+			NotebookID: projectID,
+		})
+		if err != nil {
+			// If that fails, try GetGuidebook to see if there's a different way
+			if i%5 == 0 { // Try every 5 attempts
+				resp, err = c.rpc.Do(rpc.Call{
+					ID: rpc.RPCGetGuidebook,
+					Args: []interface{}{
+						projectID,
+					},
+					NotebookID: projectID,
+				})
+			}
+			if err != nil {
+				continue // Continue polling on error
+			}
+		}
+
+		var data []interface{}
+		if err := json.Unmarshal(resp, &data); err != nil {
+			continue // Continue polling on parse error
+		}
+
+		// Check if we now have a real answer
+		if len(data) > 0 {
+			// Still processing if we get [3]
+			if len(data) == 1 {
+				if statusCode, ok := data[0].(float64); ok && statusCode == 3 {
+					continue // Still processing, continue polling
+				}
+			}
+
+			// Try to parse the answer
+			if answer := c.parseAnswerFromResponse(data); answer != "" {
+				fmt.Fprintf(os.Stderr, " ✓\n")
+				result.Answer = answer
+				return result, nil
+			}
+		}
+	}
+
+	fmt.Fprintf(os.Stderr, " ✗\n")
+	// Timeout reached
+	return nil, fmt.Errorf("timeout waiting for answer after %d attempts (%d seconds)", maxRetries, maxRetries*pollInterval)
+}
+
+// parseAnswerFromResponse extracts the answer from various response formats
+func (c *Client) parseAnswerFromResponse(data []interface{}) string {
+	if len(data) == 0 {
+		return ""
+	}
+
+	// Try different parsing strategies
+
+	// Strategy 1: Direct string response
+	if answerStr, ok := data[0].(string); ok {
+		return answerStr
+	}
+
+	// Strategy 2: Map with answer field
+	if answerData, ok := data[0].(map[string]interface{}); ok {
+		if answer, ok := answerData["answer"].(string); ok {
+			return answer
+		}
+		if answer, ok := answerData["content"].(string); ok {
+			return answer
+		}
+		if answer, ok := answerData["text"].(string); ok {
+			return answer
+		}
+	}
+
+	// Strategy 3: Nested array structure (like audio overview)
+	if len(data) > 2 {
+		if answerArray, ok := data[2].([]interface{}); ok && len(answerArray) > 0 {
+			if answer, ok := answerArray[0].(string); ok {
+				return answer
+			}
+			// Check if it's at index 1 like audio data
+			if len(answerArray) > 1 {
+				if answer, ok := answerArray[1].(string); ok {
+					return answer
+				}
+			}
+		}
+	}
+
+	// Strategy 4: Look for text in any nested structure
+	for _, item := range data {
+		if itemArray, ok := item.([]interface{}); ok {
+			for _, subItem := range itemArray {
+				if text, ok := subItem.(string); ok && len(text) > 10 { // Assume real answers are longer than 10 chars
+					return text
+				}
+			}
+		}
+	}
+
+	return ""
 }
 
 // Helper functions to identify and extract YouTube video IDs

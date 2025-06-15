@@ -188,7 +188,7 @@ func (c *Client) Execute(rpcs []RPC) (*Response, error) {
 	return &responses[0], nil
 }
 
-var debug = true
+var debug = false
 
 // decodeResponse decodes the batchexecute response
 func decodeResponse(raw string) ([]Response, error) {
@@ -196,6 +196,18 @@ func decodeResponse(raw string) ([]Response, error) {
 	if raw == "" {
 		return nil, fmt.Errorf("empty response after trimming prefix")
 	}
+
+	// First check if this is an array structure
+	var testValue interface{}
+	if err := json.NewDecoder(strings.NewReader(raw)).Decode(&testValue); err != nil {
+		return nil, fmt.Errorf("decode test value: %w", err)
+	}
+
+	// If it's not an array, return empty result
+	if _, isArray := testValue.([]interface{}); !isArray {
+		return []Response{}, nil
+	}
+
 	var responses [][]interface{}
 	if err := json.NewDecoder(strings.NewReader(raw)).Decode(&responses); err != nil {
 		return nil, fmt.Errorf("decode response: %w", err)
@@ -277,16 +289,14 @@ func decodeChunkedResponse(raw string) ([]Response, error) {
 				totalLength, lengthStr)
 		}
 
-		// Read exactly totalLength bytes for the chunk
-		chunk := make([]byte, totalLength)
-		n, err := io.ReadFull(reader, chunk)
-		if err != nil {
-			if debug {
-				fmt.Printf("Failed to read chunk: got %d bytes, wanted %d: %v\n",
-					n, totalLength, err)
-			}
-			return nil, fmt.Errorf("read chunk: %w", err)
+		// Read the chunk line (should end with newline)
+		chunkLine, err := reader.ReadString('\n')
+		if err != nil && err != io.EOF {
+			return nil, fmt.Errorf("read chunk line: %w", err)
 		}
+
+		// Remove trailing newline
+		chunk := []byte(strings.TrimSuffix(chunkLine, "\n"))
 
 		if debug {
 			fmt.Printf("Read chunk (%d bytes): %q\n",
@@ -296,6 +306,18 @@ func decodeChunkedResponse(raw string) ([]Response, error) {
 		// First try to parse as regular JSON
 		var rpcBatch [][]interface{}
 		if err := json.Unmarshal(chunk, &rpcBatch); err != nil {
+			// Check if this is a simple number or non-array type - skip it
+			var testValue interface{}
+			if parseErr := json.Unmarshal(chunk, &testValue); parseErr == nil {
+				// If it's not an array, skip this chunk
+				if _, isArray := testValue.([]interface{}); !isArray {
+					if debug {
+						fmt.Printf("Skipping non-array chunk: %v\n", testValue)
+					}
+					continue
+				}
+			}
+
 			// If that fails, try unescaping the JSON string first
 			unescaped, err := strconv.Unquote("\"" + string(chunk) + "\"")
 			if err != nil {
@@ -321,7 +343,13 @@ func decodeChunkedResponse(raw string) ([]Response, error) {
 				continue
 			}
 			rpcType, ok := rpcData[0].(string)
-			if !ok || rpcType != "wrb.fr" {
+			if !ok {
+				if debug {
+					fmt.Printf("Skipping non-string RPC type: %v\n", rpcData[0])
+				}
+				continue
+			}
+			if rpcType != "wrb.fr" {
 				if debug {
 					fmt.Printf("Skipping non-wrb.fr RPC: %v\n", rpcData[0])
 				}
@@ -333,9 +361,17 @@ func decodeChunkedResponse(raw string) ([]Response, error) {
 				ID: id,
 			}
 
-			// Handle data - parse the nested JSON string
-			if rpcData[2] != nil {
-				if dataStr, ok := rpcData[2].(string); ok {
+			// Handle data - check different positions for actual data
+			var dataIndex = -1
+			for i := 2; i < len(rpcData); i++ {
+				if rpcData[i] != nil && i != len(rpcData)-1 { // Skip the last item (index)
+					dataIndex = i
+					break
+				}
+			}
+
+			if dataIndex >= 0 {
+				if dataStr, ok := rpcData[dataIndex].(string); ok {
 					// Try to parse the data string
 					var data interface{}
 					if err := json.Unmarshal([]byte(dataStr), &data); err != nil {
@@ -359,6 +395,16 @@ func decodeChunkedResponse(raw string) ([]Response, error) {
 					if err != nil {
 						if debug {
 							fmt.Printf("Failed to re-encode response data: %v\n", err)
+						}
+						continue
+					}
+					resp.Data = rawData
+				} else {
+					// Data is not a string, marshal it directly
+					rawData, err := json.Marshal(rpcData[dataIndex])
+					if err != nil {
+						if debug {
+							fmt.Printf("Failed to marshal data: %v\n", err)
 						}
 						continue
 					}
@@ -390,7 +436,21 @@ func handleChunk(chunk []byte, responses *[]Response) error {
 			string(chunk[:min(100, len(chunk))]))
 	}
 
-	// Parse the chunk
+	// First check if this is an array structure
+	var testValue interface{}
+	if err := json.Unmarshal(chunk, &testValue); err != nil {
+		return fmt.Errorf("parse test value: %w", err)
+	}
+
+	// If it's not an array, skip this chunk
+	if _, isArray := testValue.([]interface{}); !isArray {
+		if debug {
+			fmt.Printf("Skipping non-array chunk: %v\n", testValue)
+		}
+		return nil
+	}
+
+	// Parse the chunk as array of arrays
 	var rpcBatch [][]interface{}
 	if err := json.Unmarshal(chunk, &rpcBatch); err != nil {
 		return fmt.Errorf("parse chunk: %w", err)
