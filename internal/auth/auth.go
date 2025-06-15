@@ -26,7 +26,7 @@ type BrowserAuth struct {
 func New(debug bool) *BrowserAuth {
 	return &BrowserAuth{
 		debug:   debug,
-		useExec: false,
+		useExec: true, // Changed to use exec mode for better compatibility
 	}
 }
 

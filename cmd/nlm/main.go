@@ -64,6 +64,9 @@ func main() {
 		fmt.Fprintf(os.Stderr, "  generate-outline <id>  Generate content outline\n")
 		fmt.Fprintf(os.Stderr, "  generate-section <id>  Generate new section\n\n")
 
+		fmt.Fprintf(os.Stderr, "Query Commands:\n")
+		fmt.Fprintf(os.Stderr, "  ask <id> <question>  Ask a question about notebook content\n\n")
+
 		fmt.Fprintf(os.Stderr, "Other Commands:\n")
 		fmt.Fprintf(os.Stderr, "  auth [profile]    Setup authentication\n")
 		fmt.Fprintf(os.Stderr, "  share <id>        Share notebook\n")
@@ -97,10 +100,15 @@ func run() error {
 	args := flag.Args()[1:]
 
 	var opts []batchexecute.Option
+	if debug {
+		opts = append(opts, batchexecute.WithDebug(true))
+	}
+
 	for i := 0; i < 3; i++ {
 		if i > 1 {
 			fmt.Fprintln(os.Stderr, "nlm: attempting again to obtain login information")
 			debug = true
+			opts = append(opts, batchexecute.WithDebug(true))
 		}
 
 		if err := runCmd(api.New(authToken, cookies, opts...), cmd, args...); err == nil {
@@ -110,6 +118,9 @@ func run() error {
 		}
 
 		var err error
+		if debug {
+			fmt.Fprintf(os.Stderr, "DEBUG: About to call handleAuth with debug=%v\n", debug)
+		}
 		if authToken, cookies, err = handleAuth(nil, debug); err != nil {
 			fmt.Fprintf(os.Stderr, "  -> %v\n", err)
 		}
@@ -230,7 +241,15 @@ func runCmd(client *api.Client, cmd string, args ...string) error {
 	// 		log.Fatal("usage: nlm feedback <message>")
 	// 	}
 	// 	err = submitFeedback(client, args[0])
+	case "ask":
+		if len(args) != 2 {
+			log.Fatal("usage: nlm ask <notebook-id> <question>")
+		}
+		err = askQuestion(client, args[0], args[1])
+
 	case "auth":
+		// For auth command, always use browser mode
+		os.Setenv("NLM_FORCE_BROWSER", "1")
 		_, _, err = handleAuth(args, debug)
 
 	case "hb":
@@ -594,6 +613,29 @@ func createAudioOverview(c *api.Client, projectID string, instructions string) e
 			return fmt.Errorf("save audio file: %w", err)
 		}
 		fmt.Printf("  Saved audio to: %s\n", filename)
+	}
+
+	return nil
+}
+
+// Ask operations
+func askQuestion(c *api.Client, notebookID, question string) error {
+	fmt.Printf("Asking question to notebook %s...\n", notebookID)
+	fmt.Printf("Question: %s\n\n", question)
+	fmt.Printf("Generating answer... (this may take a moment)\n")
+
+	result, err := c.AskQuestion(notebookID, question)
+	if err != nil {
+		return fmt.Errorf("ask question: %w", err)
+	}
+
+	fmt.Printf("\n✅ Answer:\n%s\n", result.Answer)
+
+	if len(result.Sources) > 0 {
+		fmt.Printf("\nSources:\n")
+		for i, source := range result.Sources {
+			fmt.Printf("  %d. %s\n", i+1, source)
+		}
 	}
 
 	return nil

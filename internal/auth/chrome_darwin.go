@@ -126,6 +126,32 @@ func getProfilePath() string {
 	return filepath.Join(home, "Library", "Application Support", "Google", "Chrome")
 }
 
+func listAvailableProfiles() ([]string, error) {
+	profilePath := getProfilePath()
+
+	entries, err := os.ReadDir(profilePath)
+	if err != nil {
+		return nil, fmt.Errorf("read profile directory: %w", err)
+	}
+
+	var profiles []string
+	for _, entry := range entries {
+		if entry.IsDir() {
+			name := entry.Name()
+			// Check if it's a valid profile directory
+			if name == "Default" || strings.HasPrefix(name, "Profile ") {
+				// Verify it has essential profile files
+				cookiesPath := filepath.Join(profilePath, name, "Cookies")
+				if _, err := os.Stat(cookiesPath); err == nil {
+					profiles = append(profiles, name)
+				}
+			}
+		}
+	}
+
+	return profiles, nil
+}
+
 func checkBrowserInstallation() string {
 	var messages []string
 	var found bool

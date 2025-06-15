@@ -1,0 +1,33 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(ls:*)",
+      "Bash(go build:*)",
+      "Bash(./nlm auth --debug)",
+      "Bash(NLM_FORCE_BROWSER=1 ./nlm auth --debug)",
+      "Bash(cat:*)",
+      "Bash(./nlm auth)",
+      "Bash(grep:*)",
+      "Bash(go test:*)",
+      "Bash(go run:*)",
+      "Bash(./nlm list)",
+      "Bash(./nlm list:*)",
+      "Bash(./nlm auth list-profiles)",
+      "Bash(./nlm auth \"Profile 2\")",
+      "Bash(unset:*)",
+      "Bash(rm:*)",
+      "Bash(./nlm auth \"Profile 1\")",
+      "Bash(./nlm sources:*)",
+      "Bash(find:*)",
+      "Bash(go list:*)",
+      "Bash(./nlm:*)",
+      "Bash(./nlm --help)",
+      "Bash(./nlm ask)",
+      "Bash(./nlm ask:*)",
+      "Bash(./nlm audio-create:*)",
+      "Bash(./nlm audio-get:*)",
+      "Bash(./nlm:*)"
+    ],
+    "deny": []
+  }
+}
