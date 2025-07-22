@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"regexp"
 	"strings"
 	"text/tabwriter"
 	"time"
@@ -21,6 +22,23 @@ var (
 	cookies   string
 	debug     bool
 )
+
+// sanitizeFilename removes or replaces characters that are not allowed in filenames
+func sanitizeFilename(filename string) string {
+	// Replace invalid characters with underscores
+	re := regexp.MustCompile(`[<>:"/\\|?*]`)
+	sanitized := re.ReplaceAllString(filename, "_")
+
+	// Remove leading/trailing spaces and dots
+	sanitized = strings.Trim(sanitized, " .")
+
+	// If the result is empty, use a default name
+	if sanitized == "" {
+		sanitized = "audio_overview"
+	}
+
+	return sanitized
+}
 
 func main() {
 	log.SetPrefix("nlm: ")
@@ -497,7 +515,9 @@ func getAudioOverview(c *api.Client, projectID string) error {
 			return fmt.Errorf("decode audio data: %w", err)
 		}
 
-		filename := fmt.Sprintf("audio_overview_%s.wav", result.AudioID)
+		// Use the title for the filename instead of the audio ID
+		sanitizedTitle := sanitizeFilename(result.Title)
+		filename := fmt.Sprintf("%s.wav", sanitizedTitle)
 		if err := os.WriteFile(filename, audioData, 0644); err != nil {
 			return fmt.Errorf("save audio file: %w", err)
 		}
@@ -608,7 +628,9 @@ func createAudioOverview(c *api.Client, projectID string, instructions string) e
 			return fmt.Errorf("decode audio data: %w", err)
 		}
 
-		filename := fmt.Sprintf("audio_overview_%s.wav", result.AudioID)
+		// Use the title for the filename instead of the audio ID
+		sanitizedTitle := sanitizeFilename(result.Title)
+		filename := fmt.Sprintf("%s.wav", sanitizedTitle)
 		if err := os.WriteFile(filename, audioData, 0644); err != nil {
 			return fmt.Errorf("save audio file: %w", err)
 		}
