@@ -803,8 +803,12 @@ func (c *Client) CreateAudioOverview(projectID string, instructions string) (*Au
 		}
 
 		// Extract audio data (index 1)
-		if audioBase64, ok := audioData[1].(string); ok {
+		if audioBase64, ok := audioData[1].(string); ok && audioBase64 != "" {
 			result.AudioData = audioBase64
+			result.IsReady = true // Audio is ready when we have actual base64 data
+		} else {
+			// Audio is not ready - audioData[1] is nil or empty
+			result.IsReady = false
 		}
 
 		// Extract ID (index 2)
@@ -815,13 +819,6 @@ func (c *Client) CreateAudioOverview(projectID string, instructions string) (*Au
 		// Extract title (index 3)
 		if title, ok := audioData[3].(string); ok {
 			result.Title = title
-		}
-
-		// Extract ready status (index 5)
-		if len(audioData) > 5 {
-			if ready, ok := audioData[5].(bool); ok {
-				result.IsReady = ready
-			}
 		}
 	}
 
@@ -864,8 +861,12 @@ func (c *Client) GetAudioOverview(projectID string) (*AudioOverviewResult, error
 		}
 
 		// Extract audio data (index 1)
-		if audioBase64, ok := audioData[1].(string); ok {
+		if audioBase64, ok := audioData[1].(string); ok && audioBase64 != "" {
 			result.AudioData = audioBase64
+			result.IsReady = true // Audio is ready when we have actual base64 data
+		} else {
+			// Audio is not ready - audioData[1] is nil or empty
+			result.IsReady = false
 		}
 
 		// Extract ID (index 2)
@@ -876,13 +877,6 @@ func (c *Client) GetAudioOverview(projectID string) (*AudioOverviewResult, error
 		// Extract title (index 3)
 		if title, ok := audioData[3].(string); ok {
 			result.Title = title
-		}
-
-		// Extract ready status (index 5)
-		if len(audioData) > 5 {
-			if ready, ok := audioData[5].(bool); ok {
-				result.IsReady = ready
-			}
 		}
 	}
 
