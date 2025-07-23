@@ -95,26 +95,40 @@ func parseProjectsFromArray(projectsArray []interface{}) ([]*Notebook, error) {
 		var createTime *timestamppb.Timestamp
 		if len(projectData) > 5 && projectData[5] != nil {
 			if metadataArray, ok := projectData[5].([]interface{}); ok {
-				// Look for timestamp in various positions
-				for i, item := range metadataArray {
-					if timestampMs, ok := item.(float64); ok && timestampMs > 1000000000000 { // Check if it's a millisecond timestamp
-						createTime = &timestamppb.Timestamp{
-							Seconds: int64(timestampMs / 1000),
-							Nanos:   int32((int64(timestampMs) % 1000) * 1000000),
-						}
-						break
-					}
-					// Also check for nested arrays that might contain timestamps
-					if nestedArray, ok := item.([]interface{}); ok && len(nestedArray) > 0 {
-						if timestampMs, ok := nestedArray[0].(float64); ok && timestampMs > 1000000000000 {
-							createTime = &timestamppb.Timestamp{
-								Seconds: int64(timestampMs / 1000),
-								Nanos:   int32((int64(timestampMs) % 1000) * 1000000),
+				// Look for timestamp in specific positions based on API structure
+				// Index 5: Last updated timestamp [seconds, nanos]
+				// Index 8: Creation timestamp [seconds, nanos]
+
+				// Try index 5 first (last updated)
+				if len(metadataArray) > 5 && metadataArray[5] != nil {
+					if timestampArray, ok := metadataArray[5].([]interface{}); ok && len(timestampArray) >= 2 {
+						if seconds, ok := timestampArray[0].(float64); ok {
+							nanos := int32(0)
+							if nanosFloat, ok := timestampArray[1].(float64); ok {
+								nanos = int32(nanosFloat)
 							}
-							break
+							createTime = &timestamppb.Timestamp{
+								Seconds: int64(seconds),
+								Nanos:   nanos,
+							}
 						}
 					}
-					_ = i // Avoid unused variable
+				}
+
+				// If not found at index 5, try index 8 (creation time)
+				if createTime == nil && len(metadataArray) > 8 && metadataArray[8] != nil {
+					if timestampArray, ok := metadataArray[8].([]interface{}); ok && len(timestampArray) >= 2 {
+						if seconds, ok := timestampArray[0].(float64); ok {
+							nanos := int32(0)
+							if nanosFloat, ok := timestampArray[1].(float64); ok {
+								nanos = int32(nanosFloat)
+							}
+							createTime = &timestamppb.Timestamp{
+								Seconds: int64(seconds),
+								Nanos:   nanos,
+							}
+						}
+					}
 				}
 			}
 		}
